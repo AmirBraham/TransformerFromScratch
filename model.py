@@ -43,3 +43,30 @@ class PositionalEncoding(nn.Module):
         x = x+(self.positionalEncodingMatrix[:,x.shape[1],:]).requires_grad(False)
         return self.dropout(x)
 
+
+
+class LayerNormalization(nn.Module):
+    def __init__(self,eps:float = 1e-5):
+        super().__init__()
+        self.eps = eps
+        self.alpha = nn.Parameter(torch.ones(1))
+        self.bias = nn.Parameter(torch.zeros(1))
+    def forward(self,x):
+        mean_x = x.mean(dim=-1,keepdim=True) # Calculate mean of last dimension
+        std_x = x.std(dim=-1,keepdim=True)
+        return self.alpha * (x-mean_x)/(std_x+self.eps) + self.bias
+        
+
+class FeedForward(nn.Module):
+    def __init__(self,d_model:int,d_ff:int,dropout:float):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout) 
+        self.linear_1=nn.Linear(d_model,d_ff)#W1 and B1
+        self.linear_2=nn.Linear(d_ff,d_model) # W2 and B2
+    def forward(self,x):
+        # the input is of type : (Batch,Seq_len,d_model)
+        #(Batch,Seq_len,d_model) -> (Batch,Seq_len,d_ff) -> (Batch,Seq_len,d_model)
+        return self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
+        
+        
+        
