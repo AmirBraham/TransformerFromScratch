@@ -21,32 +21,27 @@ class PositionalEncoding(nn.Module):
         # d_model is the size of the vector
         self.d_model = d_model
         # seq_len is the length of the sentence
-
         self.seq_len = seq_len
         # Adding dropout to avoid overfitting
         self.dropout = nn.Dropout(dropout)
 
-        # Matrix of shape(seq_len,d_model)
-        positional_encoding_matrix = torch.zeros(self.seq_len, self.d_model)
-        # Creating a tensor of shape (seq_len,1)
-        pos = torch.arange(0, self.seq_len).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, self.d_model, 2).float() * (-math.log(10000) / d_model)
-        )
-
-        positional_encoding_matrix[:, 0::2] = torch.sin(pos * div_term)
-        positional_encoding_matrix[:, 1::2] = torch.cos(pos * div_term)
-
-        # Adding batch dimension to apply the positional_encoding_matrix to a batch of sentences
-        positional_encoding_matrix = positional_encoding_matrix.unsqueeze(
-            0
-        )  # the positional encoding is of shape (1,seq_len,d_model)
-
-        # Register positional_encoding_matrix to buffer (saved with the model , not a learnable param)
-        self.register_buffer("positional_encoding_matrix", positional_encoding_matrix)
+        # Create a matrix of shape (seq_len, d_model)
+        pe = torch.zeros(seq_len, d_model)
+        # Create a vector of shape (seq_len)
+        position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1) # (seq_len, 1)
+        # Create a vector of shape (d_model)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # (d_model / 2)
+        # Apply sine to even indices
+        pe[:, 0::2] = torch.sin(position * div_term) # sin(position * (10000 ** (2i / d_model))
+        # Apply cosine to odd indices
+        pe[:, 1::2] = torch.cos(position * div_term) # cos(position * (10000 ** (2i / d_model))
+        # Add a batch dimension to the positional encoding
+        pe = pe.unsqueeze(0) # (1, seq_len, d_model)
+        # Register the positional encoding as a buffer
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + (self.positionalEncodingMatrix[:, x.shape[1], :]).requires_grad(False)
+        x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False)
         return self.dropout(x)
 
 
@@ -189,7 +184,7 @@ class DecoderBlock(nn.Module):
         self.self_attention_block = self_attention_block
         self.cross_attention_block = cross_attention_block
         self.feed_forward_block = feed_forward_block
-        self.residual_connections = nn.Module(
+        self.residual_connections = nn.ModuleList(
             [ResidualConnection(dropout) for _ in range(3)]
         )
 
@@ -248,55 +243,80 @@ class Transformer(nn.Module):
         self.src_pos = src_pos
         self.tgt_pos = tgt_pos
 
-    def encode(self,src,src_mask):
-        src=self.src_embed(src)
-        src= self.src_pos(src)
-        return self.encoder(src,src_mask)
-    
-    def decode(self,encoder_output,src_mask,tgt,tgt_mask):
+    def encode(self, src, src_mask):
+        src = self.src_embed(src)
+        src = self.src_pos(src)
+        return self.encoder(src, src_mask)
+
+    def decode(self, encoder_output, src_mask, tgt:torch.Tensor, tgt_mask:torch.Tensor):
         tgt = self.tgt_embed(tgt)
         tgt = self.tgt_pos(tgt)
-        return self.decode(tgt,encoder_output,src_mask,tgt_mask)
-    def project(self,x):
-        return self.projection_layer(x)
-    
+        return self.decode(tgt, encoder_output, src_mask, tgt_mask)
 
-def build_transformer(src_vocab_size:int,tgt_vocab_size:int,src_seq_len:int,tgt_seq_len:int,d_model:int=512,N:int=6,h:int=8,dropout:float=0.1,d_ff:int=2048):
-    #Creating embedding layers
-    src_embed = InputEmbeddings(d_model,src_vocab_size)
-    tgt_embed =InputEmbeddings(d_model,tgt_vocab_size)
-    #positional encoding
-    src_pos = PositionalEncoding(d_model,src_seq_len,dropout)
-    tgt_pos = PositionalEncoding(d_model,tgt_seq_len,dropout)
-    
-    #Encoder block * N    
+    def project(self, x):
+        return self.projection_layer(x)
+
+
+def build_transformer(
+    src_vocab_size: int,
+    tgt_vocab_size: int,
+    src_seq_len: int,
+    tgt_seq_len: int,
+    d_model: int = 512,
+    N: int = 6,
+    h: int = 8,
+    dropout: float = 0.1,
+    d_ff: int = 2048,
+):
+    # Creating embedding layers
+    src_embed = InputEmbeddings(d_model, src_vocab_size)
+    tgt_embed = InputEmbeddings(d_model, tgt_vocab_size)
+    # positional encoding
+    src_pos = PositionalEncoding(d_model, src_seq_len, dropout)
+    tgt_pos = PositionalEncoding(d_model, tgt_seq_len, dropout)
+
+    # Encoder block * N
     encoder_blocks = []
     for _ in range(N):
-        encoder_self_attention_block = MultiHeadAttention(d_model,h,dropout)
-        feed_forward_block = FeedForwardBlock(d_model,d_ff,dropout)
-        encoder_block = EncoderBlock(encoder_self_attention_block,feed_forward_block,dropout)
+        encoder_self_attention_block = MultiHeadAttention(d_model, h, dropout)
+        feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
+        encoder_block = EncoderBlock(
+            encoder_self_attention_block, feed_forward_block, dropout
+        )
         encoder_blocks.append(encoder_block)
-        
-    #Encoder block * N    
+
+    # Encoder block * N
     decoder_blocks = []
     for _ in range(N):
-        decoder_self_attention_block = MultiHeadAttention(d_model,h,dropout)
-        decoder_cross_attention_block = MultiHeadAttention(d_model,h,dropout)
-        
-        feed_forward_block = FeedForwardBlock(d_model,d_ff,dropout)
-        decoder_block = DecoderBlock(decoder_self_attention_block,decoder_cross_attention_block,feed_forward_block,dropout)
+        decoder_self_attention_block = MultiHeadAttention(d_model, h, dropout)
+        decoder_cross_attention_block = MultiHeadAttention(d_model, h, dropout)
+
+        feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
+        decoder_block = DecoderBlock(
+            decoder_self_attention_block,
+            decoder_cross_attention_block,
+            feed_forward_block,
+            dropout,
+        )
         decoder_blocks.append(decoder_block)
-    
+
     encoder = Encoder(nn.ModuleList(encoder_blocks))
     decoder = Decoder(nn.ModuleList(decoder_blocks))
-    #projection layer
-    projection_layer = ProjectionLayer(d_model,tgt_vocab_size)
-    transformer = Transformer(encoder=encoder,decoder=decoder,src_embed=src_embed,tgt_embed=tgt_embed,src_pos=src_pos,tgt_pos=tgt_pos,projection_layer=projection_layer)
-    
+    # Projection layer
+    projection_layer = ProjectionLayer(d_model, tgt_vocab_size)
+    transformer = Transformer(
+        encoder=encoder,
+        decoder=decoder,
+        src_embed=src_embed,
+        tgt_embed=tgt_embed,
+        src_pos=src_pos,
+        tgt_pos=tgt_pos,
+        projection_layer=projection_layer,
+    )
+
     # Init the params
     for p in transformer.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
+
     return transformer
-        
-        
